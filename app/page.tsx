@@ -98,6 +98,7 @@ const initialBulbs: Bulb[] = [
 
 const calibrationStorageKey = 'letter-wall-calibration-v2';
 const localShareOrigin = 'http://192.168.2.105:3000';
+const receiverClientStorageKey = 'letter-wall-receiver-client';
 const handModelUrl = '/mediapipe/hand_landmarker.task';
 const visionWasmUrl = '/mediapipe/wasm';
 const targetRadius = 4.2;
@@ -143,10 +144,9 @@ export default function Home() {
   const [receiverRoom, setReceiverRoom] = useState('');
   const [receiverMessage, setReceiverMessage] = useState<{ id: number; text: string } | null>(null);
   const [roomCode, setRoomCode] = useState('');
-  const [receiverUrl, setReceiverUrl] = useState('');
   const [qrImage, setQrImage] = useState('');
   const [connectOpen, setConnectOpen] = useState(false);
-  const [sendText, setSendText] = useState('');
+  const [connectedCount, setConnectedCount] = useState(0);
   const [calibrating, setCalibrating] = useState(false);
   const [panelOpen, setPanelOpen] = useState(true);
   const [panelPosition, setPanelPosition] = useState({ x: 2.2, y: 61 });
@@ -167,10 +167,15 @@ export default function Home() {
     if (!isReceiver || !receiverRoom) return;
     let stopped = false;
     let lastMessageId = 0;
+    let clientId = window.localStorage.getItem(receiverClientStorageKey);
+    if (!clientId) {
+      clientId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+      window.localStorage.setItem(receiverClientStorageKey, clientId);
+    }
 
     async function pollRoom() {
       try {
-        const response = await fetch(`/api/rooms/${receiverRoom}`, { cache: 'no-store' });
+        const response = await fetch(`/api/rooms/${receiverRoom}?client=${encodeURIComponent(clientId)}`, { cache: 'no-store' });
         const data = await response.json();
         if (!stopped && data.message && data.message.id !== lastMessageId) {
           lastMessageId = data.message.id;
@@ -188,6 +193,35 @@ export default function Home() {
       window.clearInterval(interval);
     };
   }, [isReceiver, receiverRoom]);
+
+  useEffect(() => {
+    if (!roomCode) {
+      setConnectedCount(0);
+      return;
+    }
+
+    let stopped = false;
+    async function pollConnection() {
+      try {
+        const response = await fetch(`/api/rooms/${roomCode}`, { cache: 'no-store' });
+        const data = await response.json();
+        if (!stopped) {
+          const count = Number(data.connectedCount ?? 0);
+          setConnectedCount(count);
+          if (count > 0) setConnectOpen(false);
+        }
+      } catch {
+        if (!stopped) setConnectedCount(0);
+      }
+    }
+
+    void pollConnection();
+    const interval = window.setInterval(pollConnection, 1200);
+    return () => {
+      stopped = true;
+      window.clearInterval(interval);
+    };
+  }, [roomCode]);
 
   useEffect(() => {
     const saved = window.localStorage.getItem(calibrationStorageKey);
@@ -216,28 +250,28 @@ export default function Home() {
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
       if (event.key !== 'Enter' || event.shiftKey) return;
-      const target = event.target as HTMLElement | null;
-      if (target?.tagName === 'BUTTON') return;
-      const text = (sendText || message).trim();
+      const text = message.trim();
       if (!text) return;
       event.preventDefault();
+      event.stopImmediatePropagation();
       void sendToReceiver();
     }
 
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [message, roomCode, sendText]);
+    window.addEventListener('keydown', handleKeyDown, { capture: true });
+    return () => window.removeEventListener('keydown', handleKeyDown, { capture: true });
+  }, [message, roomCode]);
 
   function wait(ms: number) {
     return new Promise((resolve) => window.setTimeout(resolve, ms));
   }
 
-  async function playSignalSequence() {
+  async function playSignalSequence(signalText = 'RUN') {
     if (sequencePlaying) return;
     setSequencePlaying(true);
     setPanic(false);
     setBlackout(false);
     updateHandHold();
+    const typedLetters = signalText.toUpperCase().replace(/[^A-Z]/g, '').split('');
 
     const accumulated: string[] = [];
     for (const char of alphabet) {
@@ -257,7 +291,7 @@ export default function Home() {
     }
 
     for (let i = 0; i < 2; i += 1) {
-      for (const char of ['R', 'U', 'N']) {
+      for (const char of typedLetters.length ? typedLetters : ['R', 'U', 'N']) {
         setSequenceLit([char]);
         await wait(260);
         setSequenceLit([]);
@@ -434,7 +468,7 @@ export default function Home() {
             setHandPoint(null);
             updateHandHold();
             drawHandPointer();
-            void playSignalSequence();
+            void playSignalSequence(message || 'RUN');
             frameRef.current = window.requestAnimationFrame(detectFrame);
             return;
           }
@@ -704,30 +738,30 @@ export default function Home() {
 
   async function openConnection(nextRoomCode = roomCode) {
     const code = nextRoomCode || Math.random().toString(36).slice(2, 7).toUpperCase();
-    const url = `${localShareOrigin}/?view=receiver&room=${code}`;
+    const origin = window.location.hostname === 'localhost' ? localShareOrigin : window.location.origin;
+    const url = `${origin}/?view=receiver&room=${code}`;
     setRoomCode(code);
-    setReceiverUrl(url);
-    setQrImage(await QRCode.toDataURL(url, { margin: 1, width: 240, color: { dark: '#1b120b', light: '#fff4d6' } }));
+    setQrImage(await QRCode.toDataURL(url, { margin: 1, width: 280, color: { dark: '#080604', light: '#fbf4e3' } }));
     setConnectOpen(true);
     return code;
   }
 
   async function sendToReceiver() {
-    const text = (sendText || message).trim();
+    const text = message.trim();
     if (!text) return;
     const code = roomCode || Math.random().toString(36).slice(2, 7).toUpperCase();
     if (!roomCode) await openConnection(code);
+    void playSignalSequence(text);
     await fetch(`/api/rooms/${code}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text }),
     });
-    setSendText('');
   }
 
   if (isReceiver) {
     const receiverText = receiverMessage?.text ?? '';
-    const receiverFontVw = Math.max(8, Math.min(24, 150 / Math.max(receiverText.length, 1)));
+    const receiverFontVw = Math.max(7, Math.min(22, 135 / Math.max(receiverText.length, 1)));
 
     return (
       <main className="receiverScreen">
@@ -827,7 +861,7 @@ export default function Home() {
           <div className="messageBox">
             <p className="eyebrow">Message</p>
             <p className="message">{message || '...'}</p>
-            <button type="button" className="messageSend" onClick={sendToReceiver} disabled={!(sendText || message).trim()}>
+            <button type="button" className="messageSend" onClick={sendToReceiver} disabled={!message.trim()}>
               Send
             </button>
           </div>
@@ -839,7 +873,9 @@ export default function Home() {
             >
               {cameraStatus === 'loading' ? 'Loading' : cameraStatus === 'on' ? 'Stop' : 'Camera'}
             </button>
-            <button type="button" onClick={() => void openConnection()}>Connect</button>
+            <button type="button" className={connectedCount > 0 ? 'connected' : ''} onClick={() => void openConnection()}>
+              {connectedCount > 0 ? 'Connected' : 'Connect'}
+            </button>
             <button type="button" onClick={() => setMessage('')}>Clear</button>
           </div>
         </aside>
@@ -848,19 +884,9 @@ export default function Home() {
             <button type="button" className="connectClose" onClick={() => setConnectOpen(false)} aria-label="Close connection panel">
               x
             </button>
-            <p className="eyebrow">Phone Room</p>
-            <h2>{roomCode}</h2>
+            <p className="connectTitle">Scan to connect</p>
             {qrImage ? <img src={qrImage} alt="QR code for phone receiver" /> : null}
-            <input
-              value={sendText}
-              onChange={(event) => setSendText(event.target.value.toUpperCase())}
-              placeholder={message || 'RUN'}
-              aria-label="Text to send to phone"
-            />
-            <button type="button" onClick={sendToReceiver} disabled={!(sendText || message).trim()}>
-              Send to phone
-            </button>
-            <p className="receiverUrl">{receiverUrl}</p>
+            <p className="connectHint">{connectedCount > 0 ? `${connectedCount} device${connectedCount > 1 ? 's' : ''} connected` : 'Keep this code open while pairing'}</p>
           </aside>
         ) : null}
         <aside
