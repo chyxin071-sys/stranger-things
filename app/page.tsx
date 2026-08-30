@@ -553,36 +553,52 @@ export default function Home() {
 
   async function startCamera() {
     if (cameraStatus === 'on' || cameraStatus === 'loading') return;
+    let openedStream: MediaStream | null = null;
+
     try {
       setCameraStatus('loading');
-      const [{ FilesetResolver, HandLandmarker: MediaPipeHandLandmarker }, stream] = await Promise.all([
-        import('@mediapipe/tasks-vision'),
-        navigator.mediaDevices.getUserMedia({
-          video: { width: 1280, height: 720, facingMode: 'user' },
-          audio: false,
-        }),
-      ]);
-      const vision = await FilesetResolver.forVisionTasks(visionWasmUrl);
-      const landmarker = await MediaPipeHandLandmarker.createFromOptions(vision, {
-        baseOptions: {
-          modelAssetPath: handModelUrl,
-          delegate: 'GPU',
-        },
-        runningMode: 'VIDEO',
-        numHands: 2,
+      openedStream = await navigator.mediaDevices.getUserMedia({
+        video: { width: 1280, height: 720, facingMode: 'user' },
+        audio: false,
       });
 
-      streamRef.current = stream;
-      landmarkerRef.current = landmarker;
+      streamRef.current = openedStream;
       setCameraPreviewVisible(true);
       if (videoRef.current) {
-        videoRef.current.srcObject = stream;
+        videoRef.current.srcObject = openedStream;
         await videoRef.current.play();
       }
       setCameraStatus('on');
+
+      const { FilesetResolver, HandLandmarker: MediaPipeHandLandmarker } = await import('@mediapipe/tasks-vision');
+      const vision = await FilesetResolver.forVisionTasks(visionWasmUrl);
+      try {
+        landmarkerRef.current = await MediaPipeHandLandmarker.createFromOptions(vision, {
+          baseOptions: {
+            modelAssetPath: handModelUrl,
+            delegate: 'GPU',
+          },
+          runningMode: 'VIDEO',
+          numHands: 2,
+        });
+      } catch (gpuError) {
+        console.warn('GPU hand tracking failed, falling back to CPU.', gpuError);
+        landmarkerRef.current = await MediaPipeHandLandmarker.createFromOptions(vision, {
+          baseOptions: {
+            modelAssetPath: handModelUrl,
+            delegate: 'CPU',
+          },
+          runningMode: 'VIDEO',
+          numHands: 2,
+        });
+      }
+
       frameRef.current = window.requestAnimationFrame(detectFrame);
     } catch (error) {
       console.error(error);
+      if (openedStream && streamRef.current !== openedStream) {
+        openedStream.getTracks().forEach((track) => track.stop());
+      }
       stopCamera('error');
     }
   }
@@ -943,7 +959,7 @@ export default function Home() {
           onPointerDown={dragCamera}
           aria-label="Camera preview"
         >
-          <video ref={videoRef} muted playsInline />
+          <video ref={videoRef} muted playsInline autoPlay />
           <canvas ref={canvasRef} aria-hidden="true" />
           <button type="button" onClick={() => setCameraPreviewVisible(false)} aria-label="Hide camera preview">
             Hide
