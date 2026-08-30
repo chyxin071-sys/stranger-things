@@ -127,6 +127,9 @@ export default function Home() {
   const handHoldRef = useRef<{ char: string; startedAt: number; picked: boolean } | null>(null);
   const lastSignalAtRef = useRef(0);
   const doubleOpenStartedAtRef = useRef<number | null>(null);
+  const singleOpenStartedAtRef = useRef<number | null>(null);
+  const lastGestureSendAtRef = useRef(0);
+  const messageRef = useRef('');
   const dragPanelRef = useRef<{ x: number; y: number } | null>(null);
   const [bulbs, setBulbs] = useState<Bulb[]>(initialBulbs);
   const [message, setMessage] = useState('');
@@ -153,6 +156,10 @@ export default function Home() {
   const [selectedLightId, setSelectedLightId] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const timerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    messageRef.current = message;
+  }, [message]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -249,9 +256,16 @@ export default function Home() {
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') {
+        if (!message) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        setMessage('');
+        return;
+      }
+
       if (event.key !== 'Enter' || event.shiftKey) return;
-      const text = message.trim();
-      if (!text) return;
+      if (!message.trim()) return;
       event.preventDefault();
       event.stopImmediatePropagation();
       void sendToReceiver();
@@ -404,6 +418,25 @@ export default function Home() {
     }
   }
 
+  function resetOpenHandSend() {
+    singleOpenStartedAtRef.current = null;
+  }
+
+  function updateOpenHandSend(openHandsCount: number, now: number) {
+    if (openHandsCount !== 1 || calibrating || sequencePlaying || !messageRef.current.trim()) {
+      resetOpenHandSend();
+      return false;
+    }
+
+    singleOpenStartedAtRef.current ??= now;
+    if (now - singleOpenStartedAtRef.current < 900 || now - lastGestureSendAtRef.current < 3500) return false;
+
+    lastGestureSendAtRef.current = now;
+    resetOpenHandSend();
+    void sendToReceiver();
+    return true;
+  }
+
   function drawHandPointer(point?: { x: number; y: number }) {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -454,12 +487,14 @@ export default function Home() {
         drawHandPointer();
         setHandPoint(null);
         updateHandHold();
+        resetOpenHandSend();
         setBlackout(false);
       } else {
         const now = performance.now();
         const openHands = hands.filter((hand) => getExtendedFingers(hand).length >= 4);
 
         if (openHands.length >= 2) {
+          resetOpenHandSend();
           doubleOpenStartedAtRef.current ??= now;
           if (now - doubleOpenStartedAtRef.current > 800 && now - lastSignalAtRef.current > 7000) {
             lastSignalAtRef.current = now;
@@ -474,6 +509,15 @@ export default function Home() {
           }
         } else {
           doubleOpenStartedAtRef.current = null;
+        }
+
+        if (updateOpenHandSend(openHands.length, now)) {
+          setBlackout(false);
+          setHandPoint(null);
+          updateHandHold();
+          drawHandPointer();
+          frameRef.current = window.requestAnimationFrame(detectFrame);
+          return;
         }
 
         const landmarks = hands[0];
@@ -747,7 +791,7 @@ export default function Home() {
   }
 
   async function sendToReceiver() {
-    const text = message.trim();
+    const text = messageRef.current.trim();
     if (!text) return;
     const code = roomCode || Math.random().toString(36).slice(2, 7).toUpperCase();
     if (!roomCode) await openConnection(code);
