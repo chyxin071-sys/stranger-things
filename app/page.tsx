@@ -213,6 +213,21 @@ export default function Home() {
     return () => window.clearTimeout(timeout);
   }, [panic]);
 
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key !== 'Enter' || event.shiftKey) return;
+      const target = event.target as HTMLElement | null;
+      if (target?.tagName === 'BUTTON') return;
+      const text = (sendText || message).trim();
+      if (!text) return;
+      event.preventDefault();
+      void sendToReceiver();
+    }
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [message, roomCode, sendText]);
+
   function wait(ms: number) {
     return new Promise((resolve) => window.setTimeout(resolve, ms));
   }
@@ -687,19 +702,22 @@ export default function Home() {
     window.setTimeout(() => setCopied(false), 1200);
   }
 
-  async function openConnection() {
-    const code = roomCode || Math.random().toString(36).slice(2, 7).toUpperCase();
+  async function openConnection(nextRoomCode = roomCode) {
+    const code = nextRoomCode || Math.random().toString(36).slice(2, 7).toUpperCase();
     const url = `${localShareOrigin}/?view=receiver&room=${code}`;
     setRoomCode(code);
     setReceiverUrl(url);
     setQrImage(await QRCode.toDataURL(url, { margin: 1, width: 240, color: { dark: '#1b120b', light: '#fff4d6' } }));
     setConnectOpen(true);
+    return code;
   }
 
   async function sendToReceiver() {
     const text = (sendText || message).trim();
-    if (!roomCode || !text) return;
-    await fetch(`/api/rooms/${roomCode}`, {
+    if (!text) return;
+    const code = roomCode || Math.random().toString(36).slice(2, 7).toUpperCase();
+    if (!roomCode) await openConnection(code);
+    await fetch(`/api/rooms/${code}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text }),
@@ -809,7 +827,7 @@ export default function Home() {
           <div className="messageBox">
             <p className="eyebrow">Message</p>
             <p className="message">{message || '...'}</p>
-            <button type="button" className="messageSend" onClick={sendToReceiver} disabled={!roomCode || !(sendText || message).trim()}>
+            <button type="button" className="messageSend" onClick={sendToReceiver} disabled={!(sendText || message).trim()}>
               Send
             </button>
           </div>
@@ -821,7 +839,7 @@ export default function Home() {
             >
               {cameraStatus === 'loading' ? 'Loading' : cameraStatus === 'on' ? 'Stop' : 'Camera'}
             </button>
-            <button type="button" onClick={openConnection}>Connect</button>
+            <button type="button" onClick={() => void openConnection()}>Connect</button>
             <button type="button" onClick={() => setMessage('')}>Clear</button>
           </div>
         </aside>
@@ -839,7 +857,7 @@ export default function Home() {
               placeholder={message || 'RUN'}
               aria-label="Text to send to phone"
             />
-            <button type="button" onClick={sendToReceiver} disabled={!roomCode || !(sendText || message).trim()}>
+            <button type="button" onClick={sendToReceiver} disabled={!(sendText || message).trim()}>
               Send to phone
             </button>
             <p className="receiverUrl">{receiverUrl}</p>
