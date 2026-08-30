@@ -391,20 +391,21 @@ button {
 .console {
   position: fixed;
   left: 50%;
-  bottom: max(14px, env(safe-area-inset-bottom));
+  bottom: max(18px, env(safe-area-inset-bottom));
   z-index: 20;
   display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: 16px;
-  width: min(720px, calc(100vw - 32px));
-  min-height: 70px;
-  padding: 12px 14px;
+  gap: 8px;
+  width: min(620px, calc(100vw - 28px));
+  min-height: 0;
+  padding: 0;
   transform: translateX(-50%);
-  border: 1px solid rgba(255, 226, 178, 0.16);
-  border-radius: 7px;
-  background: rgba(12, 8, 5, 0.58);
-  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.34);
-  backdrop-filter: blur(9px);
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
 }
 
 .eyebrow {
@@ -413,11 +414,29 @@ button {
   font-size: 10px;
   letter-spacing: 0;
   text-transform: uppercase;
-  color: rgba(244, 226, 197, 0.62);
+  color: rgba(244, 226, 197, 0.46);
 }
 
-.console > div:first-child {
+.messageBox {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  column-gap: 14px;
+  align-items: end;
+  width: min(420px, 100%);
   min-width: 0;
+  padding: 10px 12px 12px 16px;
+  border: 0;
+  border-radius: 12px;
+  background: rgba(3, 3, 3, 0.58);
+  box-shadow:
+    0 12px 36px rgba(0, 0, 0, 0.28),
+    inset 0 1px 0 rgba(255, 255, 255, 0.035);
+  backdrop-filter: blur(14px);
+}
+
+.messageBox .eyebrow {
+  grid-column: 1 / -1;
 }
 
 .message {
@@ -426,29 +445,80 @@ button {
   font-family: 'Courier New', monospace;
   font-size: clamp(18px, 2vw, 30px);
   color: #fff2ca;
-  text-shadow: 0 0 12px rgba(255, 193, 82, 0.5);
+  text-shadow: 0 0 14px rgba(255, 225, 165, 0.34);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+.messageSend {
+  min-width: 58px;
+  min-height: 30px;
+  border: 0;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 241, 216, 0.82);
+  cursor: pointer;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 11px;
+  font-weight: 600;
+  transition:
+    background 180ms ease,
+    color 180ms ease,
+    opacity 180ms ease;
+}
+
+.messageSend:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: rgba(255, 248, 232, 0.96);
+}
+
+.messageSend:disabled {
+  cursor: default;
+  opacity: 0.32;
+}
+
 .actions {
-  margin-left: auto;
+  margin-left: 0;
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
+  flex-wrap: nowrap;
+  align-items: end;
+  gap: 0;
   flex: 0 0 auto;
-  justify-content: flex-end;
+  justify-content: center;
+  width: auto;
+  max-width: 100%;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 18px;
+  background: rgba(3, 3, 3, 0.44);
+  box-shadow:
+    0 13px 34px rgba(0, 0, 0, 0.3),
+    inset 0 1px 0 rgba(255, 255, 255, 0.035);
+  backdrop-filter: blur(14px);
 }
 
 .actions button {
-  min-width: 76px;
-  min-height: 38px;
-  border: 1px solid rgba(255, 226, 178, 0.18);
-  border-radius: 6px;
-  background: rgba(255, 222, 168, 0.09);
-  color: #ffeac4;
+  width: 92px;
+  min-width: 0;
+  min-height: 32px;
+  border: 0;
+  border-radius: 13px;
+  background: transparent;
+  color: rgba(255, 241, 216, 0.7);
   cursor: pointer;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0;
+  transform-origin: center bottom;
+  transition:
+    width 260ms cubic-bezier(0.2, 0.9, 0.2, 1),
+    transform 260ms cubic-bezier(0.2, 0.9, 0.2, 1),
+    color 180ms ease,
+    background 180ms ease,
+    text-shadow 180ms ease,
+    opacity 180ms ease;
 }
 
 .connectPanel {
@@ -669,12 +739,24 @@ button {
 }
 
 .actions button:hover {
-  background: rgba(255, 222, 168, 0.16);
+  color: rgba(255, 248, 232, 0.98);
+  width: 122px;
+  background: rgba(255, 255, 255, 0.075);
+  text-shadow: 0 0 18px rgba(255, 235, 196, 0.54);
+  transform: scale(1.03);
 }
 
 .actions button:disabled {
-  cursor: wait;
-  opacity: 0.62;
+  cursor: default;
+  opacity: 0.38;
+}
+
+.actions button:disabled:hover {
+  color: rgba(255, 239, 211, 0.76);
+  width: 92px;
+  background: transparent;
+  text-shadow: none;
+  transform: none;
 }
 
 .cameraPanel {
@@ -1028,29 +1110,41 @@ button {
     width: auto;
     min-height: 0;
     transform: none;
-    align-items: stretch;
+    align-items: center;
     flex-direction: column;
-    gap: 10px;
-    padding: 10px;
+    gap: 8px;
+    padding: 0;
   }
 
   .actions {
-    display: grid;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
-    width: 100%;
+    display: flex;
+    flex-wrap: nowrap;
+    width: auto;
+    max-width: calc(100vw - 20px);
     margin-left: 0;
-    gap: 7px;
+    gap: 2px;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .actions::-webkit-scrollbar {
+    display: none;
   }
 
   .actions button {
-    min-width: 0;
-    min-height: 36px;
-    padding: 0 8px;
-    font-size: 13px;
+    width: 78px;
+    min-height: 30px;
+    padding: 0 9px;
+    font-size: 11px;
+  }
+
+  .actions button:hover {
+    width: 78px;
+    transform: none;
   }
 
   .message {
-    font-size: 20px;
+    font-size: 19px;
     white-space: normal;
     overflow-wrap: anywhere;
   }
@@ -1111,10 +1205,6 @@ button {
 }
 
 @media (max-width: 520px) {
-  .actions {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-
   .actions button {
     font-size: 12px;
   }
@@ -1128,18 +1218,13 @@ button {
   .console {
     width: min(620px, calc(100vw - 24px));
     min-height: 0;
-    flex-direction: row;
+    flex-direction: column;
     align-items: center;
-    gap: 10px;
-  }
-
-  .actions {
-    width: auto;
-    grid-template-columns: repeat(5, minmax(58px, 1fr));
+    gap: 7px;
   }
 
   .actions button {
-    min-height: 34px;
+    min-height: 29px;
   }
 }
 

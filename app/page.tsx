@@ -806,9 +806,12 @@ export default function Home() {
           </span>
         ) : null}
         <aside className="console" aria-label="Message console">
-          <div>
+          <div className="messageBox">
             <p className="eyebrow">Message</p>
             <p className="message">{message || '...'}</p>
+            <button type="button" className="messageSend" onClick={sendToReceiver} disabled={!roomCode || !(sendText || message).trim()}>
+              Send
+            </button>
           </div>
           <div className="actions">
             <button
@@ -818,13 +821,7 @@ export default function Home() {
             >
               {cameraStatus === 'loading' ? 'Loading' : cameraStatus === 'on' ? 'Stop' : 'Camera'}
             </button>
-            <button type="button" onClick={playSignalSequence} disabled={sequencePlaying}>
-              {sequencePlaying ? 'Running' : 'Signal'}
-            </button>
             <button type="button" onClick={openConnection}>Connect</button>
-            <button type="button" onClick={sendToReceiver} disabled={!roomCode || !(sendText || message).trim()}>
-              Send
-            </button>
             <button type="button" onClick={() => setMessage('')}>Clear</button>
           </div>
         </aside>
