@@ -3,7 +3,7 @@ import type { Viewport } from 'next';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: 'Letter Wall Signal',
+  title: 'Stranger Things',
   description: 'An interactive letter-wall prototype inspired by glowing holiday lights.',
 };
 
