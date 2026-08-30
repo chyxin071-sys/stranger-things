@@ -24,6 +24,36 @@ type Bulb = {
   letter?: string;
 };
 
+type RoomRecord = {
+  _id?: string;
+  message?: RoomMessage | null;
+  clients?: Record<string, number>;
+  updatedAt?: number;
+};
+
+type RoomMessage = {
+  id: number;
+  text: string;
+  sentAt: number;
+};
+
+type StatsPayload = {
+  totals?: Record<string, number>;
+  days?: Record<string, Record<string, number>>;
+  rooms?: Record<string, {
+    room?: string;
+    firstSeen?: number;
+    lastSeen?: number;
+    visit?: number;
+    receiver?: number;
+    connect?: number;
+    send?: number;
+    clientCount?: number;
+    lastMessage?: string;
+  }>;
+  recent?: Array<{ type?: string; room?: string; text?: string; at?: number }>;
+};
+
 const targetSize = 5.6;
 const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
 
@@ -97,12 +127,17 @@ const initialBulbs: Bulb[] = [
 ];
 
 const calibrationStorageKey = 'letter-wall-calibration-v2';
+const cloudbaseEnvId = 'cloud1-8grodf5s3006f004';
 const localShareOrigin = 'http://192.168.2.105:3000';
 const receiverClientStorageKey = 'letter-wall-receiver-client';
+const visitorClientStorageKey = 'letter-wall-visitor-client';
+const visitDayStorageKey = 'letter-wall-visit-day';
 const handModelUrl = '/mediapipe/hand_landmarker.task';
 const visionWasmUrl = '/mediapipe/wasm';
 const targetRadius = 4.2;
 const holdDuration = 750;
+const openHandDuration = 650;
+const roomCodeAlphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const fingers = [
   { name: 'thumb', tip: 4, joint: 3, base: 2 },
   { name: 'index', tip: 8, joint: 6, base: 5 },
@@ -116,6 +151,87 @@ const wirePaths = [
   'M 30 55 C 34 61, 38 54, 43 56 S 51 55, 56 54 S 64 57, 70 54 S 74 58, 76 54',
 ];
 
+let cloudbaseAppPromise: Promise<any> | null = null;
+
+async function getCloudbaseApp() {
+  cloudbaseAppPromise ??= (async () => {
+    const { default: cloudbase } = await import('@cloudbase/js-sdk');
+    const app = cloudbase.init({ env: cloudbaseEnvId });
+    const auth = app.auth({ persistence: 'local' });
+    const loginState = await auth.getLoginState();
+    if (!loginState) {
+      const result = await auth.signInAnonymously();
+      if (result?.error) throw result.error;
+    }
+    return app;
+  })();
+  return cloudbaseAppPromise;
+}
+
+function generateRoomCode(length = 5) {
+  const values = new Uint8Array(length);
+  window.crypto.getRandomValues(values);
+  return Array.from(values, (value) => roomCodeAlphabet[value % roomCodeAlphabet.length]).join('');
+}
+
+function getFreshClientCount(clients?: Record<string, number>) {
+  if (!clients) return 0;
+  const now = Date.now();
+  return Object.values(clients).filter((lastSeen) => now - Number(lastSeen) < 12000).length;
+}
+
+async function callRoomFunction(action: string, data: Record<string, unknown>) {
+  const app = await getCloudbaseApp();
+  const response = await app.callFunction({
+    name: 'letter-wall-room',
+    data: { action, ...data },
+    parse: true,
+  });
+  const result = response?.result;
+  if (!result?.ok) throw new Error(result?.error || 'ROOM_SYNC_FAILED');
+  return result.room as RoomRecord;
+}
+
+async function callStatsFunction(action: string, data: Record<string, unknown> = {}) {
+  const app = await getCloudbaseApp();
+  const response = await app.callFunction({
+    name: 'letter-wall-room',
+    data: { action, ...data },
+    parse: true,
+  });
+  const result = response?.result;
+  if (!result?.ok) throw new Error(result?.error || 'STATS_FAILED');
+  return result.stats as StatsPayload;
+}
+
+async function trackUsage(type: string, data: Record<string, unknown> = {}) {
+  try {
+    await callStatsFunction('track', { type, ...data });
+  } catch (error) {
+    console.warn('Usage tracking failed.', error);
+  }
+}
+
+async function getUsageStats() {
+  return callStatsFunction('stats');
+}
+
+async function touchRoomClient(room: string, clientId: string) {
+  return callRoomFunction('touch', { room, clientId });
+}
+
+async function publishRoomMessage(room: string, message: RoomMessage) {
+  return callRoomFunction('send', { room, message });
+}
+
+async function ensureRoom(room: string) {
+  return callRoomFunction('ensure', { room });
+}
+
+async function getRoomRecord(room: string): Promise<RoomRecord | null> {
+  return callRoomFunction('get', { room });
+}
+
 export default function Home() {
   const wallRef = useRef<HTMLElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -124,12 +240,20 @@ export default function Home() {
   const streamRef = useRef<MediaStream | null>(null);
   const frameRef = useRef<number | null>(null);
   const lastVideoTimeRef = useRef(-1);
+  const lastDetectionAtRef = useRef(0);
+  const trackingErrorCountRef = useRef(0);
   const handHoldRef = useRef<{ char: string; startedAt: number; picked: boolean } | null>(null);
   const lastSignalAtRef = useRef(0);
   const doubleOpenStartedAtRef = useRef<number | null>(null);
   const singleOpenStartedAtRef = useRef<number | null>(null);
   const lastGestureSendAtRef = useRef(0);
   const messageRef = useRef('');
+  const roomCodeRef = useRef('');
+  const connectedCountRef = useRef(0);
+  const landmarkerReadyRef = useRef<Promise<HandLandmarker> | null>(null);
+  const openingConnectionRef = useRef(false);
+  const sendingRef = useRef(false);
+  const autoCloseQrRef = useRef(false);
   const dragPanelRef = useRef<{ x: number; y: number } | null>(null);
   const [bulbs, setBulbs] = useState<Bulb[]>(initialBulbs);
   const [message, setMessage] = useState('');
@@ -141,15 +265,26 @@ export default function Home() {
   const [hold, setHold] = useState<string | null>(null);
   const [handPoint, setHandPoint] = useState<{ x: number; y: number; char?: string } | null>(null);
   const [cameraStatus, setCameraStatus] = useState<'off' | 'loading' | 'on' | 'error'>('off');
+  const [cameraHint, setCameraHint] = useState('');
   const [cameraPreviewVisible, setCameraPreviewVisible] = useState(true);
   const [cameraFrame, setCameraFrame] = useState({ x: 83.5, y: 70.5, width: 13.6 });
+  const [phoneLandscape, setPhoneLandscape] = useState(false);
+  const [isStatsView, setIsStatsView] = useState(false);
+  const [stats, setStats] = useState<StatsPayload | null>(null);
+  const [statsLoading, setStatsLoading] = useState(false);
+  const [statsError, setStatsError] = useState(false);
   const [isReceiver, setIsReceiver] = useState(false);
+  const [receiverFontReady, setReceiverFontReady] = useState(false);
   const [receiverRoom, setReceiverRoom] = useState('');
   const [receiverMessage, setReceiverMessage] = useState<{ id: number; text: string } | null>(null);
+  const [receiverStatus, setReceiverStatus] = useState<'connecting' | 'connected' | 'error'>('connecting');
   const [roomCode, setRoomCode] = useState('');
   const [qrImage, setQrImage] = useState('');
   const [connectOpen, setConnectOpen] = useState(false);
+  const [connectionLoading, setConnectionLoading] = useState(false);
   const [connectedCount, setConnectedCount] = useState(0);
+  const [connectionProblem, setConnectionProblem] = useState(false);
+  const [sendState, setSendState] = useState<'idle' | 'sending' | 'sent' | 'failed'>('idle');
   const [calibrating, setCalibrating] = useState(false);
   const [panelOpen, setPanelOpen] = useState(true);
   const [panelPosition, setPanelPosition] = useState({ x: 2.2, y: 61 });
@@ -159,16 +294,69 @@ export default function Home() {
 
   useEffect(() => {
     messageRef.current = message;
+    setSendState('idle');
   }, [message]);
+
+  useEffect(() => {
+    roomCodeRef.current = roomCode;
+  }, [roomCode]);
+
+  useEffect(() => {
+    connectedCountRef.current = connectedCount;
+  }, [connectedCount]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const room = params.get('room');
+    if (params.get('stats') === '1') {
+      setIsStatsView(true);
+      return;
+    }
     if (params.get('view') === 'receiver' && room) {
       setIsReceiver(true);
       setReceiverRoom(room.toUpperCase());
     }
   }, []);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('stats') === '1' || params.get('view') === 'receiver' || isReceiver || isStatsView) return;
+
+    const today = new Date().toISOString().slice(0, 10);
+    if (window.localStorage.getItem(visitDayStorageKey) === today) return;
+
+    let clientId = window.localStorage.getItem(visitorClientStorageKey);
+    if (!clientId) {
+      clientId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+      window.localStorage.setItem(visitorClientStorageKey, clientId);
+    }
+    window.localStorage.setItem(visitDayStorageKey, today);
+    void trackUsage('visit', { room: 'HOME', clientId });
+  }, [isReceiver, isStatsView]);
+
+  useEffect(() => {
+    if (!isStatsView) return;
+    void loadStats();
+  }, [isStatsView]);
+
+  useEffect(() => {
+    if (!isReceiver) return;
+    let stopped = false;
+
+    async function loadReceiverFont() {
+      try {
+        await document.fonts?.load('80px Pinzelan');
+        await document.fonts?.ready;
+      } finally {
+        if (!stopped) setReceiverFontReady(true);
+      }
+    }
+
+    void loadReceiverFont();
+    return () => {
+      stopped = true;
+    };
+  }, [isReceiver]);
 
   useEffect(() => {
     if (!isReceiver || !receiverRoom) return;
@@ -179,16 +367,19 @@ export default function Home() {
       clientId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
       window.localStorage.setItem(receiverClientStorageKey, clientId);
     }
+    void trackUsage('receiver', { room: receiverRoom, clientId });
 
     async function pollRoom() {
       try {
-        const response = await fetch(`/api/rooms/${receiverRoom}?client=${encodeURIComponent(clientId)}`, { cache: 'no-store' });
-        const data = await response.json();
-        if (!stopped && data.message && data.message.id !== lastMessageId) {
-          lastMessageId = data.message.id;
-          setReceiverMessage({ id: data.message.id, text: data.message.text });
+        const record = (await getRoomRecord(receiverRoom)) ?? { clients: {}, message: null };
+        await touchRoomClient(receiverRoom, clientId);
+        if (!stopped) setReceiverStatus('connected');
+        if (!stopped && record.message && record.message.id !== lastMessageId) {
+          lastMessageId = record.message.id;
+          setReceiverMessage({ id: record.message.id, text: record.message.text });
         }
       } catch {
+        if (!stopped) setReceiverStatus('error');
         // The receiver keeps polling quietly; temporary network misses are normal.
       }
     }
@@ -210,15 +401,21 @@ export default function Home() {
     let stopped = false;
     async function pollConnection() {
       try {
-        const response = await fetch(`/api/rooms/${roomCode}`, { cache: 'no-store' });
-        const data = await response.json();
+        const record = await getRoomRecord(roomCode);
         if (!stopped) {
-          const count = Number(data.connectedCount ?? 0);
+          const count = getFreshClientCount(record?.clients);
           setConnectedCount(count);
-          if (count > 0) setConnectOpen(false);
+          setConnectionProblem(false);
+          if (count > 0 && autoCloseQrRef.current) {
+            setConnectOpen(false);
+            autoCloseQrRef.current = false;
+          }
         }
       } catch {
-        if (!stopped) setConnectedCount(0);
+        if (!stopped) {
+          setConnectedCount(0);
+          setConnectionProblem(true);
+        }
       }
     }
 
@@ -261,6 +458,14 @@ export default function Home() {
         event.preventDefault();
         event.stopImmediatePropagation();
         setMessage('');
+        return;
+      }
+
+      if (event.key === 'Backspace') {
+        if (!message) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        setMessage((current) => current.slice(0, -1));
         return;
       }
 
@@ -327,6 +532,16 @@ export default function Home() {
   useEffect(() => {
     return () => stopCamera();
   }, []);
+
+  useEffect(() => {
+    if (isReceiver) return;
+    const timeout = window.setTimeout(() => {
+      void prepareHandLandmarker().catch((error) => {
+        console.warn('Hand tracking warmup failed. It will retry when the camera starts.', error);
+      });
+    }, 650);
+    return () => window.clearTimeout(timeout);
+  }, [isReceiver]);
 
   function pickLetter(char: string) {
     if (calibrating) return;
@@ -400,6 +615,30 @@ export default function Home() {
     return getExtendedFingers(landmarks).length === 0;
   }
 
+  function isOpenPalm(landmarks: { x: number; y: number }[]) {
+    const wrist = landmarks[0];
+    if (!wrist) return false;
+
+    const extended = getExtendedFingers(landmarks);
+    if (extended.length >= 3) return true;
+
+    const nonThumbFingers = fingers.filter((finger) => finger.name !== 'thumb');
+    const raisedFingers = nonThumbFingers.filter((finger) => {
+      const tip = landmarks[finger.tip];
+      const joint = landmarks[finger.joint];
+      const base = landmarks[finger.base];
+      if (!tip || !joint || !base) return false;
+
+      const wristToTip = Math.hypot(tip.x - wrist.x, tip.y - wrist.y);
+      const wristToJoint = Math.hypot(joint.x - wrist.x, joint.y - wrist.y);
+      const tipAboveJoint = tip.y < joint.y - 0.01;
+
+      return tipAboveJoint || wristToTip > wristToJoint * 1.04;
+    });
+
+    return raisedFingers.length >= 3;
+  }
+
   function updateHandHold(char?: string) {
     if (!char) {
       handHoldRef.current = null;
@@ -423,17 +662,23 @@ export default function Home() {
   }
 
   function updateOpenHandSend(openHandsCount: number, now: number) {
-    if (openHandsCount !== 1 || calibrating || sequencePlaying || !messageRef.current.trim()) {
+    const hasConnectedReceiver = roomCodeRef.current && connectedCountRef.current > 0;
+    const text = messageRef.current.trim();
+    if (openHandsCount !== 1 || calibrating || sequencePlaying || !text) {
       resetOpenHandSend();
       return false;
     }
 
     singleOpenStartedAtRef.current ??= now;
-    if (now - singleOpenStartedAtRef.current < 900 || now - lastGestureSendAtRef.current < 3500) return false;
+    if (now - singleOpenStartedAtRef.current < openHandDuration || now - lastGestureSendAtRef.current < 3500) return false;
 
     lastGestureSendAtRef.current = now;
     resetOpenHandSend();
-    void sendToReceiver();
+    if (hasConnectedReceiver) {
+      void sendToReceiver();
+    } else {
+      void playSignalSequence(text);
+    }
     return true;
   }
 
@@ -480,70 +725,92 @@ export default function Home() {
 
     if (video.currentTime !== lastVideoTimeRef.current) {
       lastVideoTimeRef.current = video.currentTime;
-      const result = landmarker.detectForVideo(video, performance.now());
-      const hands = result.landmarks ?? [];
+      const now = performance.now();
+      if (now - lastDetectionAtRef.current < 90) {
+        frameRef.current = window.requestAnimationFrame(detectFrame);
+        return;
+      }
+      lastDetectionAtRef.current = now;
 
-      if (!hands.length) {
-        drawHandPointer();
-        setHandPoint(null);
-        updateHandHold();
-        resetOpenHandSend();
-        setBlackout(false);
-      } else {
-        const now = performance.now();
-        const openHands = hands.filter((hand) => getExtendedFingers(hand).length >= 4);
+      try {
+        const result = landmarker.detectForVideo(video, now);
+        const hands = result.landmarks ?? [];
+        trackingErrorCountRef.current = 0;
 
-        if (openHands.length >= 2) {
+        if (!hands.length) {
+          drawHandPointer();
+          setHandPoint(null);
+          updateHandHold();
           resetOpenHandSend();
-          doubleOpenStartedAtRef.current ??= now;
-          if (now - doubleOpenStartedAtRef.current > 800 && now - lastSignalAtRef.current > 7000) {
-            lastSignalAtRef.current = now;
+          setBlackout(false);
+        } else {
+          const openHands = hands.filter((hand) => isOpenPalm(hand));
+
+          if (openHands.length >= 2) {
+            resetOpenHandSend();
+            doubleOpenStartedAtRef.current ??= now;
+            if (now - doubleOpenStartedAtRef.current > 800 && now - lastSignalAtRef.current > 7000) {
+              lastSignalAtRef.current = now;
+              doubleOpenStartedAtRef.current = null;
+              setBlackout(false);
+              setHandPoint(null);
+              updateHandHold();
+              drawHandPointer();
+              void playSignalSequence(message || 'RUN');
+              frameRef.current = window.requestAnimationFrame(detectFrame);
+              return;
+            }
+          } else {
             doubleOpenStartedAtRef.current = null;
+          }
+
+          if (updateOpenHandSend(openHands.length, now)) {
             setBlackout(false);
             setHandPoint(null);
             updateHandHold();
             drawHandPointer();
-            void playSignalSequence(message || 'RUN');
             frameRef.current = window.requestAnimationFrame(detectFrame);
             return;
           }
-        } else {
-          doubleOpenStartedAtRef.current = null;
+
+          const landmarks = hands[0];
+          const extendedFingers = getExtendedFingers(landmarks);
+          const pointingFinger = getPointingFinger(extendedFingers);
+          const tip = pointingFinger ? landmarks[pointingFinger.tip] : landmarks[8];
+          const point = {
+            x: Math.max(0, Math.min(100, (1 - tip.x) * 100)),
+            y: Math.max(0, Math.min(100, tip.y * 100)),
+          };
+
+          drawHandPointer(pointingFinger ? point : undefined);
+
+          if (isFist(landmarks)) {
+            setBlackout(true);
+            updateHandHold();
+            setHandPoint(point);
+          } else if (pointingFinger) {
+            setBlackout(false);
+            const char = findNearestLetter(point.x, point.y);
+            setHandPoint({ ...point, char });
+            updateHandHold(char);
+          } else {
+            setBlackout(false);
+            setHandPoint(point);
+            updateHandHold();
+          }
         }
-
-        if (updateOpenHandSend(openHands.length, now)) {
+      } catch (error) {
+        trackingErrorCountRef.current += 1;
+        console.warn('Hand tracking frame failed.', error);
+        drawHandPointer();
+        setHandPoint(null);
+        updateHandHold();
+        resetOpenHandSend();
+        if (trackingErrorCountRef.current >= 3) {
+          landmarkerRef.current?.close();
+          landmarkerRef.current = null;
+          trackingErrorCountRef.current = 0;
           setBlackout(false);
-          setHandPoint(null);
-          updateHandHold();
-          drawHandPointer();
-          frameRef.current = window.requestAnimationFrame(detectFrame);
-          return;
-        }
-
-        const landmarks = hands[0];
-        const extendedFingers = getExtendedFingers(landmarks);
-        const pointingFinger = getPointingFinger(extendedFingers);
-        const tip = pointingFinger ? landmarks[pointingFinger.tip] : landmarks[8];
-        const point = {
-          x: Math.max(0, Math.min(100, (1 - tip.x) * 100)),
-          y: Math.max(0, Math.min(100, tip.y * 100)),
-        };
-
-        drawHandPointer(pointingFinger ? point : undefined);
-
-        if (isFist(landmarks)) {
-          setBlackout(true);
-          updateHandHold();
-          setHandPoint(point);
-        } else if (pointingFinger) {
-          setBlackout(false);
-          const char = findNearestLetter(point.x, point.y);
-          setHandPoint({ ...point, char });
-          updateHandHold(char);
-        } else {
-          setBlackout(false);
-          setHandPoint(point);
-          updateHandHold();
         }
       }
     }
@@ -557,18 +824,19 @@ export default function Home() {
 
     try {
       setCameraStatus('loading');
+      setCameraHint('Opening camera...');
       openedStream = await navigator.mediaDevices.getUserMedia({
-        video: { width: 1280, height: 720, facingMode: 'user' },
+        video: { width: { ideal: 960 }, height: { ideal: 540 }, facingMode: 'user' },
         audio: false,
       });
 
       streamRef.current = openedStream;
       setCameraPreviewVisible(true);
+      setCameraHint('Initializing hand tracking...');
       if (videoRef.current) {
         videoRef.current.srcObject = openedStream;
         await videoRef.current.play();
       }
-      setCameraStatus('on');
     } catch (error) {
       console.error(error);
       openedStream?.getTracks().forEach((track) => track.stop());
@@ -577,32 +845,36 @@ export default function Home() {
     }
 
     try {
-      const { FilesetResolver, HandLandmarker: MediaPipeHandLandmarker } = await import('@mediapipe/tasks-vision');
-      const vision = await FilesetResolver.forVisionTasks(visionWasmUrl);
-      try {
-        landmarkerRef.current = await MediaPipeHandLandmarker.createFromOptions(vision, {
-          baseOptions: {
-            modelAssetPath: handModelUrl,
-            delegate: 'GPU',
-          },
-          runningMode: 'VIDEO',
-          numHands: 2,
-        });
-      } catch (gpuError) {
-        console.warn('GPU hand tracking failed, falling back to CPU.', gpuError);
-        landmarkerRef.current = await MediaPipeHandLandmarker.createFromOptions(vision, {
-          baseOptions: {
-            modelAssetPath: handModelUrl,
-            delegate: 'CPU',
-          },
-          runningMode: 'VIDEO',
-          numHands: 2,
-        });
-      }
-
+      landmarkerRef.current = await prepareHandLandmarker();
+      setCameraHint('');
+      setCameraStatus('on');
       frameRef.current = window.requestAnimationFrame(detectFrame);
     } catch (trackingError) {
       console.warn('Hand tracking could not start. Camera preview will remain available.', trackingError);
+      setCameraHint('Camera is on. Hand tracking is still loading.');
+      setCameraStatus('on');
+    }
+  }
+
+  async function prepareHandLandmarker() {
+    if (landmarkerRef.current) return landmarkerRef.current;
+    landmarkerReadyRef.current ??= (async () => {
+      const { FilesetResolver, HandLandmarker: MediaPipeHandLandmarker } = await import('@mediapipe/tasks-vision');
+      const vision = await FilesetResolver.forVisionTasks(visionWasmUrl);
+      return MediaPipeHandLandmarker.createFromOptions(vision, {
+        baseOptions: {
+          modelAssetPath: handModelUrl,
+          delegate: 'CPU',
+        },
+        runningMode: 'VIDEO',
+        numHands: 1,
+      });
+    })();
+    try {
+      return await landmarkerReadyRef.current;
+    } catch (error) {
+      landmarkerReadyRef.current = null;
+      throw error;
     }
   }
 
@@ -615,12 +887,16 @@ export default function Home() {
     streamRef.current = null;
     landmarkerRef.current?.close();
     landmarkerRef.current = null;
+    landmarkerReadyRef.current = null;
     lastVideoTimeRef.current = -1;
+    lastDetectionAtRef.current = 0;
+    trackingErrorCountRef.current = 0;
     handHoldRef.current = null;
     doubleOpenStartedAtRef.current = null;
     setHandPoint(null);
     setHold(null);
     setBlackout(false);
+    setCameraHint('');
     drawHandPointer();
     setCameraStatus(nextStatus);
   }
@@ -799,42 +1075,182 @@ export default function Home() {
     window.setTimeout(() => setCopied(false), 1200);
   }
 
+  async function togglePhoneView() {
+    if (phoneLandscape) {
+      setPhoneLandscape(false);
+      try {
+        screen.orientation?.unlock?.();
+        if (document.fullscreenElement) await document.exitFullscreen();
+      } catch {
+        // Some mobile browsers ignore orientation requests; the layout stays usable.
+      }
+      return;
+    }
+
+    try {
+      if (!document.fullscreenElement) await document.documentElement.requestFullscreen();
+      await screen.orientation?.lock?.('landscape');
+    } catch {
+      // The page still rotates itself when the browser refuses system rotation.
+    }
+    setPhoneLandscape(true);
+  }
+
   async function openConnection(nextRoomCode = roomCode) {
-    const code = nextRoomCode || Math.random().toString(36).slice(2, 7).toUpperCase();
-    const origin = window.location.hostname === 'localhost' ? localShareOrigin : window.location.origin;
-    const url = `${origin}/?view=receiver&room=${code}`;
-    setRoomCode(code);
-    setQrImage(await QRCode.toDataURL(url, { margin: 1, width: 280, color: { dark: '#080604', light: '#fbf4e3' } }));
+    if (openingConnectionRef.current) return roomCodeRef.current;
+    openingConnectionRef.current = true;
+    setConnectionLoading(true);
+    setConnectionProblem(false);
     setConnectOpen(true);
-    return code;
+    autoCloseQrRef.current = connectedCountRef.current === 0;
+    try {
+      const code = nextRoomCode || generateRoomCode();
+      setRoomCode(code);
+      const isLocalPreview = ['localhost', '127.0.0.1', '0.0.0.0'].includes(window.location.hostname);
+      const origin = isLocalPreview ? localShareOrigin : window.location.origin;
+      const url = `${origin}/?view=receiver&room=${code}`;
+      const nextQrImage = await QRCode.toDataURL(url, { margin: 1, width: 280, color: { dark: '#080604', light: '#fbf4e3' } });
+      setQrImage(nextQrImage);
+      await ensureRoom(code);
+      void trackUsage('connect', { room: code });
+      return code;
+    } catch (error) {
+      setConnectionProblem(true);
+      throw error;
+    } finally {
+      openingConnectionRef.current = false;
+      setConnectionLoading(false);
+    }
   }
 
   async function sendToReceiver() {
+    if (sendingRef.current) return;
     const text = messageRef.current.trim();
     if (!text) return;
-    const code = roomCode || Math.random().toString(36).slice(2, 7).toUpperCase();
-    if (!roomCode) await openConnection(code);
-    void playSignalSequence(text);
-    await fetch(`/api/rooms/${code}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text }),
-    });
+    sendingRef.current = true;
+    setSendState('sending');
+    try {
+      const code = roomCodeRef.current || generateRoomCode();
+      if (!roomCodeRef.current) await openConnection(code);
+      const outgoing = {
+        id: Date.now(),
+        text: text.toUpperCase(),
+        sentAt: Date.now(),
+      };
+      void playSignalSequence(text);
+      await publishRoomMessage(code, outgoing);
+      void trackUsage('send', { room: code, text: outgoing.text });
+      setSendState('sent');
+      window.setTimeout(() => setSendState('idle'), 900);
+    } catch {
+      setSendState('failed');
+      setConnectionProblem(true);
+    } finally {
+      sendingRef.current = false;
+    }
+  }
+
+  async function loadStats() {
+    setStatsLoading(true);
+    setStatsError(false);
+    try {
+      setStats(await getUsageStats());
+    } catch {
+      setStatsError(true);
+    } finally {
+      setStatsLoading(false);
+    }
+  }
+
+  function formatTime(value?: number) {
+    if (!value) return '-';
+    return new Intl.DateTimeFormat('zh-CN', {
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    }).format(new Date(value));
+  }
+
+  if (isStatsView) {
+    const totals = stats?.totals || {};
+    const roomRows = Object.values(stats?.rooms || {})
+      .filter((room) => room.room && !['STATS', 'NO_ROOM', 'NOROOM', 'HOME'].includes(room.room))
+      .sort((a, b) => Number(b.lastSeen || 0) - Number(a.lastSeen || 0));
+    const recentRows = (stats?.recent || []).slice(0, 18);
+
+    return (
+      <main className="statsScreen">
+        <section className="statsPanel">
+          <header className="statsHeader">
+            <div>
+              <p className="eyebrow">Private stats</p>
+              <h1>Letter Wall Stats</h1>
+            </div>
+            <button type="button" onClick={loadStats} disabled={statsLoading}>
+              {statsLoading ? 'Loading' : 'Refresh'}
+            </button>
+          </header>
+          {statsError ? <p className="statsError">统计读取失败，稍后再刷新一次。</p> : null}
+          <div className="statsCards">
+            <article><span>打开次数</span><strong>{totals.visits || 0}</strong></article>
+            <article><span>扫码进入</span><strong>{totals.receivers || 0}</strong></article>
+            <article><span>Connect</span><strong>{totals.connects || 0}</strong></article>
+            <article><span>发送次数</span><strong>{totals.sends || 0}</strong></article>
+          </div>
+          <div className="statsGrid">
+            <section>
+              <h2>Rooms</h2>
+              <div className="statsTable">
+                <div className="statsRow statsHead">
+                  <span>房间</span><span>设备</span><span>发送</span><span>最后使用</span>
+                </div>
+                {roomRows.length ? roomRows.map((room) => (
+                  <div className="statsRow" key={room.room}>
+                    <span>{room.room}</span>
+                    <span>{room.clientCount || 0}</span>
+                    <span>{room.send || 0}</span>
+                    <span>{formatTime(room.lastSeen)}</span>
+                  </div>
+                )) : <p className="statsEmpty">还没有房间记录。</p>}
+              </div>
+            </section>
+            <section>
+              <h2>Recent</h2>
+              <div className="statsTable">
+                {recentRows.length ? recentRows.map((item, index) => (
+                  <div className="statsRow" key={`${item.at}-${index}`}>
+                    <span>{item.type}</span>
+                    <span>{item.room}</span>
+                    <span>{item.text || '-'}</span>
+                    <span>{formatTime(item.at)}</span>
+                  </div>
+                )) : <p className="statsEmpty">暂无最近记录。</p>}
+              </div>
+            </section>
+          </div>
+        </section>
+      </main>
+    );
   }
 
   if (isReceiver) {
     const receiverText = receiverMessage?.text ?? '';
-    const receiverFontVw = Math.max(7, Math.min(22, 135 / Math.max(receiverText.length, 1)));
+    const receiverTextLength = Math.max(receiverText.replace(/\s/g, '').length, 1);
+    const receiverFontVmax = receiverTextLength <= 6
+      ? Math.min(32, 22 + (6 - receiverTextLength) * 2)
+      : Math.max(7, 132 / receiverTextLength);
+    const receiverMaxPx = receiverTextLength <= 3 ? 360 : receiverTextLength <= 6 ? 300 : 260;
 
     return (
       <main className="receiverScreen">
         <div className="receiverNoise" />
         <div className="receiverStage">
-          {receiverMessage ? (
+          {receiverMessage && receiverFontReady ? (
             <div
               key={receiverMessage.id}
               className="receiverWord"
-              style={{ fontSize: `clamp(46px, ${receiverFontVw}vmax, 260px)` }}
+              style={{ fontSize: `clamp(46px, ${receiverFontVmax}vmax, ${receiverMaxPx}px)` }}
               aria-live="polite"
             >
               {receiverMessage.text.split('').map((char, index) => (
@@ -844,7 +1260,10 @@ export default function Home() {
               ))}
             </div>
           ) : (
-            <p className="receiverWaiting">ROOM {receiverRoom}</p>
+            <p className={`receiverWaiting ${receiverStatus === 'error' ? 'receiverError' : ''}`}>
+              ROOM {receiverRoom}
+              <span>{receiverStatus === 'connected' ? 'CONNECTED' : receiverStatus === 'error' ? 'SYNC BLOCKED' : 'CONNECTING'}</span>
+            </p>
           )}
         </div>
       </main>
@@ -852,7 +1271,7 @@ export default function Home() {
   }
 
   return (
-    <main className={`scene ${panic ? 'panic' : ''} ${blackout ? 'blackout' : ''} ${cameraStatus === 'on' ? 'cameraRunning' : ''} ${calibrating ? 'isCalibrating calibratingLights' : ''}`}>
+    <main className={`scene ${panic ? 'panic' : ''} ${blackout ? 'blackout' : ''} ${cameraStatus === 'on' ? 'cameraRunning' : ''} ${calibrating ? 'isCalibrating calibratingLights' : ''} ${phoneLandscape ? 'phoneLandscape' : ''}`}>
       <section ref={wallRef} className="wall" aria-label="Strange letter wall interactive prototype">
         <div className="photoLayer" />
         <div className="dimLayer" />
@@ -920,67 +1339,6 @@ export default function Home() {
             {handPoint.char ?? ''}
           </span>
         ) : null}
-        <aside className="console" aria-label="Message console">
-          <div className="messageBox">
-            <p className="eyebrow">Message</p>
-            <p className="message">{message || '...'}</p>
-            <button type="button" className="messageSend" onClick={sendToReceiver} disabled={!message.trim()}>
-              Send
-            </button>
-          </div>
-          <div className="actions">
-            <button
-              type="button"
-              onClick={cameraStatus === 'on' ? stopCamera : startCamera}
-              disabled={cameraStatus === 'loading'}
-            >
-              {cameraStatus === 'loading' ? 'Loading' : cameraStatus === 'on' ? 'Stop' : 'Camera'}
-            </button>
-            <button type="button" className={connectedCount > 0 ? 'connected' : ''} onClick={() => void openConnection()}>
-              {connectedCount > 0 ? 'Connected' : 'Connect'}
-            </button>
-            <button type="button" onClick={() => setMessage('')}>Clear</button>
-          </div>
-        </aside>
-        {connectOpen ? (
-          <aside className="connectPanel" aria-label="Phone connection">
-            <button type="button" className="connectClose" onClick={() => setConnectOpen(false)} aria-label="Close connection panel">
-              x
-            </button>
-            <p className="connectTitle">Scan to connect</p>
-            {qrImage ? <img src={qrImage} alt="QR code for phone receiver" /> : null}
-            <p className="connectHint">{connectedCount > 0 ? `${connectedCount} device${connectedCount > 1 ? 's' : ''} connected` : 'Keep this code open while pairing'}</p>
-          </aside>
-        ) : null}
-        <aside
-          className={`cameraPanel ${cameraPreviewVisible && (cameraStatus === 'on' || cameraStatus === 'error') ? 'visible' : ''}`}
-          style={{
-            left: `${cameraFrame.x}%`,
-            top: `${cameraFrame.y}%`,
-            width: `${cameraFrame.width}%`,
-          }}
-          onPointerDown={dragCamera}
-          aria-label="Camera preview"
-        >
-          <video ref={videoRef} muted playsInline autoPlay />
-          <canvas ref={canvasRef} aria-hidden="true" />
-          <button type="button" onClick={() => setCameraPreviewVisible(false)} aria-label="Hide camera preview">
-            Hide
-          </button>
-          {(['nw', 'ne', 'sw', 'se'] as const).map((corner) => (
-            <span
-              key={corner}
-              className={`cameraResizeHandle ${corner}`}
-              onPointerDown={(event) => resizeCamera(event, corner)}
-              aria-hidden="true"
-            />
-          ))}
-        </aside>
-        {cameraStatus === 'on' && !cameraPreviewVisible ? (
-          <button type="button" className="cameraRestore" onClick={() => setCameraPreviewVisible(true)}>
-            Camera
-          </button>
-        ) : null}
         {calibrating ? (
           <aside
             className={`calibrationPanel ${panelOpen ? '' : 'collapsed'}`}
@@ -1021,6 +1379,88 @@ export default function Home() {
           </aside>
         ) : null}
       </section>
+      <aside className="console" aria-label="Message console">
+        <div className="messageBox">
+          <p className="eyebrow">Message</p>
+          <p className="message">{message || '...'}</p>
+          <button type="button" className="messageSend" onClick={sendToReceiver} disabled={!message.trim() || sendState === 'sending'}>
+            {sendState === 'sending' ? 'Sending' : sendState === 'sent' ? 'Sent' : sendState === 'failed' ? 'Failed' : 'Send'}
+          </button>
+        </div>
+        <div className="actions">
+          <button
+            type="button"
+            onClick={cameraStatus === 'on' ? stopCamera : startCamera}
+            disabled={cameraStatus === 'loading'}
+          >
+            {cameraStatus === 'loading' ? 'Initializing' : cameraStatus === 'on' ? 'Stop' : 'Camera'}
+          </button>
+          <button
+            type="button"
+            className={connectedCount > 0 ? 'connected' : ''}
+            onClick={() => void openConnection()}
+            disabled={connectionLoading}
+            >
+              {connectionLoading ? 'Pairing' : connectedCount > 0 ? 'Connected' : 'Connect'}
+            </button>
+          <button type="button" onClick={() => setMessage('')}>Clear</button>
+          <button
+            type="button"
+            className="phoneRotate"
+            onClick={togglePhoneView}
+            aria-label={phoneLandscape ? 'Use portrait view' : 'Use landscape view'}
+          >
+            {phoneLandscape ? 'Portrait' : 'Rotate'}
+          </button>
+        </div>
+      </aside>
+      {connectOpen ? (
+        <aside className="connectPanel" aria-label="Phone connection">
+          <button type="button" className="connectClose" onClick={() => setConnectOpen(false)} aria-label="Close connection panel">
+            x
+          </button>
+          <p className="connectTitle">Scan to connect</p>
+          <p className="connectRoom">ROOM {roomCode}</p>
+          {qrImage ? <img src={qrImage} alt="QR code for phone receiver" /> : <div className="qrLoading">...</div>}
+          <p className="connectHint">
+            {connectedCount > 0
+              ? `${connectedCount} device${connectedCount > 1 ? 's' : ''} connected`
+              : connectionProblem
+                ? 'Connection blocked. Check login and database permissions.'
+                : 'Keep this code open while pairing'}
+          </p>
+        </aside>
+      ) : null}
+      <aside
+        className={`cameraPanel ${cameraPreviewVisible && (cameraStatus === 'loading' || cameraStatus === 'on' || cameraStatus === 'error') ? 'visible' : ''}`}
+        style={{
+          left: `${cameraFrame.x}%`,
+          top: `${cameraFrame.y}%`,
+          width: `${cameraFrame.width}%`,
+        }}
+        onPointerDown={dragCamera}
+        aria-label="Camera preview"
+      >
+        <video ref={videoRef} muted playsInline autoPlay />
+        <canvas ref={canvasRef} aria-hidden="true" />
+        {cameraHint ? <p className="cameraHint">{cameraHint}</p> : null}
+        <button type="button" onClick={() => setCameraPreviewVisible(false)} aria-label="Hide camera preview">
+          Hide
+        </button>
+        {(['nw', 'ne', 'sw', 'se'] as const).map((corner) => (
+          <span
+            key={corner}
+            className={`cameraResizeHandle ${corner}`}
+            onPointerDown={(event) => resizeCamera(event, corner)}
+            aria-hidden="true"
+          />
+        ))}
+      </aside>
+      {cameraStatus === 'on' && !cameraPreviewVisible ? (
+        <button type="button" className="cameraRestore" onClick={() => setCameraPreviewVisible(true)}>
+          Camera
+        </button>
+      ) : null}
     </main>
   );
 }

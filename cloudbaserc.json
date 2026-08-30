@@ -1,0 +1,14 @@
+{
+  "$schema": "https://static.cloudbase.net/cli/cloudbaserc.schema.json",
+  "envId": "cloud1-8grodf5s3006f004",
+  "functionRoot": "cloudfunctions",
+  "functions": [
+    {
+      "name": "letter-wall-room",
+      "timeout": 5,
+      "runtime": "Nodejs20.19",
+      "handler": "index.main",
+      "installDependency": true
+    }
+  ]
+}

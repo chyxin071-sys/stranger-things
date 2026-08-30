@@ -1,56 +1,97 @@
-# CloudBase deployment
+# CloudBase Deployment
 
-Use this project with CloudBase static hosting by building first, then deploying the generated client files.
+This project is deployed with Tencent CloudBase static hosting plus one CloudBase function.
 
-## CloudBase console settings
+## Current URLs
 
-Set the deployment version configuration to:
+- Custom domain: <https://stranger.pinnuozhujia.cn/>
+- Default CloudBase domain: <https://cloud1-8grodf5s3006f004-1421470557.tcloudbaseapp.com/>
+- Private stats page: <https://stranger.pinnuozhujia.cn/?stats=1>
+
+## CloudBase Resources
+
+- Environment: `cloud1-8grodf5s3006f004`
+- Static hosting path: `/`
+- Function: `letter-wall-room`
+- Database collection: `letter_wall_rooms`
+- Authentication: anonymous login enabled
+
+The same collection stores normal room documents and one internal stats document with id `STATS`.
+
+## Required Console Settings
+
+Enable anonymous login in CloudBase authentication.
+
+Create or keep the document database collection:
+
+```text
+letter_wall_rooms
+```
+
+For this prototype, allow anonymous clients to read/write through the CloudBase app. The room operations also go through the `letter-wall-room` cloud function.
+
+Add the web security domains used by the site:
+
+```text
+stranger.pinnuozhujia.cn
+cloud1-8grodf5s3006f004-1421470557.tcloudbaseapp.com
+stranger-things-cloud1-8grodf5s3006f004.webapps.tcloudbase.com
+localhost
+127.0.0.1
+192.168.2.105
+```
+
+## Deploy Function
 
 ```bash
+npx -p @cloudbase/cli@3.8.1 tcb fn deploy --all --force -e cloud1-8grodf5s3006f004
+```
+
+## Deploy Static Site
+
+```bash
+npm run lint
+npm run build:cloudbase
+npx -p @cloudbase/cli@3.8.1 tcb hosting deploy ./dist / -e cloud1-8grodf5s3006f004
+```
+
+## CloudBase Git Deployment
+
+If using CloudBase Git deployment, use:
+
+```text
+Framework: other
+Node.js: 18 or newer
 Target directory: ./
 Install command: npm ci
 Build command: npm run build:cloudbase
 Deploy command: tcb hosting deploy ./dist /
 ```
 
-If the console appends the environment id automatically, keep its generated `-e ...` suffix.
+If the console has a separate build output field, set it to:
 
-## Node.js version
-
-This project requires Node.js 22 or newer:
-
-```json
-"engines": {
-  "node": ">=22.13.0"
-}
+```text
+./dist
 ```
 
-In CloudBase, set `NODE_JS_VERSION` to `22`. The failed deployment used Node.js 18, which is too old for this project.
+## Why `dist` Errors Happen
 
-## Why the previous deployment failed
+CloudBase clones the repository fresh during deployment. The `dist/` directory is generated and ignored by git, so it does not exist until the build command runs.
 
-The previous command deployed `./dist`, but the build step was empty. CloudBase clones the repository fresh for every deployment, and `dist/` is intentionally ignored by git, so the directory did not exist in the deployment container.
+If deployment says:
 
-After `npm run build:cloudbase`, the static hosting files are created in:
-
-```bash
-dist
+```text
+Path does not exist: /root/cloudbase-workspace/dist
 ```
 
-Deploying `dist` is the correct static hosting target. The CloudBase build script uses a static Vite entry so the output includes an `index.html` file.
+the deploy step ran before `npm run build:cloudbase`.
 
-## Local check
+## Room And Stats Flow
 
-Before redeploying, you can verify the build locally:
+The desktop page calls `letter-wall-room` to create or reuse a room.
 
-```bash
-npm run build:cloudbase
-```
+The phone receiver polls the same room and sends a heartbeat so the desktop can show how many devices are connected.
 
-Then deploy from your machine if needed:
+When the desktop sends a message, the cloud function writes the message into the room document, and all connected phones pick it up.
 
-```bash
-npm run deploy:cloudbase
-```
-
-Note: this app also contains `/api/rooms/:room`. Static hosting only serves the frontend files. If that room-sharing API must work online, it needs to be moved to a CloudBase function, CloudBase database-backed API, or another server runtime.
+The hidden stats page reads the internal `STATS` document through the same cloud function. The stats page itself is not counted as a visit.
