@@ -569,7 +569,14 @@ export default function Home() {
         await videoRef.current.play();
       }
       setCameraStatus('on');
+    } catch (error) {
+      console.error(error);
+      openedStream?.getTracks().forEach((track) => track.stop());
+      stopCamera('error');
+      return;
+    }
 
+    try {
       const { FilesetResolver, HandLandmarker: MediaPipeHandLandmarker } = await import('@mediapipe/tasks-vision');
       const vision = await FilesetResolver.forVisionTasks(visionWasmUrl);
       try {
@@ -594,12 +601,8 @@ export default function Home() {
       }
 
       frameRef.current = window.requestAnimationFrame(detectFrame);
-    } catch (error) {
-      console.error(error);
-      if (openedStream && streamRef.current !== openedStream) {
-        openedStream.getTracks().forEach((track) => track.stop());
-      }
-      stopCamera('error');
+    } catch (trackingError) {
+      console.warn('Hand tracking could not start. Camera preview will remain available.', trackingError);
     }
   }
 
