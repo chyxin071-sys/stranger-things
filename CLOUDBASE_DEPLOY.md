@@ -10,7 +10,7 @@ Set the deployment version configuration to:
 Target directory: ./
 Install command: npm ci
 Build command: npm run build:cloudbase
-Deploy command: tcb hosting deploy ./dist/client /
+Deploy command: tcb hosting deploy ./dist /
 ```
 
 If the console appends the environment id automatically, keep its generated `-e ...` suffix.
@@ -34,10 +34,10 @@ The previous command deployed `./dist`, but the build step was empty. CloudBase 
 After `npm run build:cloudbase`, the static hosting files are created in:
 
 ```bash
-dist/client
+dist
 ```
 
-Deploying `dist/client` is the correct static hosting target. The CloudBase build script uses a static Vite entry so the output includes an `index.html` file.
+Deploying `dist` is the correct static hosting target. The CloudBase build script uses a static Vite entry so the output includes an `index.html` file.
 
 ## Local check
 

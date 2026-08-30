@@ -9,7 +9,7 @@
     "dev": "vinext dev",
     "build": "vinext build",
     "build:cloudbase": "vite build --config vite.cloudbase.config.ts",
-    "deploy:cloudbase": "npm run build:cloudbase && tcb hosting deploy ./dist/client /",
+    "deploy:cloudbase": "npm run build:cloudbase && tcb hosting deploy ./dist /",
     "start": "vinext start",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next"
   },
