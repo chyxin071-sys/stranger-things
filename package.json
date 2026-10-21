@@ -8,6 +8,7 @@
   "scripts": {
     "dev": "vite --host 0.0.0.0 --port 3000",
     "build": "vite build --config vite.cloudbase.config.ts",
+    "build:github": "vite build --config vite.github.config.ts",
     "build:cloudbase": "vite build --config vite.cloudbase.config.ts",
     "deploy:cloudbase": "npm run build:cloudbase && tcb hosting deploy ./dist /",
     "start": "vite preview --host 0.0.0.0 --port 3000",

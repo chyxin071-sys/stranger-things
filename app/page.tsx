@@ -132,8 +132,8 @@ const localShareOrigin = 'http://192.168.2.105:3000';
 const receiverClientStorageKey = 'letter-wall-receiver-client';
 const visitorClientStorageKey = 'letter-wall-visitor-client';
 const visitDayStorageKey = 'letter-wall-visit-day';
-const handModelUrl = '/mediapipe/hand_landmarker.task';
-const visionWasmUrl = '/mediapipe/wasm';
+const handModelUrl = `${import.meta.env.BASE_URL}mediapipe/hand_landmarker.task`;
+const visionWasmUrl = `${import.meta.env.BASE_URL}mediapipe/wasm`;
 const targetRadius = 4.2;
 const holdDuration = 750;
 const openHandDuration = 650;
@@ -145,12 +145,6 @@ const fingers = [
   { name: 'ring', tip: 16, joint: 14, base: 13 },
   { name: 'pinky', tip: 20, joint: 18, base: 17 },
 ];
-const wirePaths = [
-  'M 23 30 C 22 21, 25 18, 33 18 S 44 19, 49 19 S 62 18, 69 18 S 75 27, 81 25',
-  'M 27 37 C 31 33, 35 40, 39 41 S 47 39, 54 36 S 62 34, 68 37 S 74 39, 78 36',
-  'M 30 55 C 34 61, 38 54, 43 56 S 51 55, 56 54 S 64 57, 70 54 S 74 58, 76 54',
-];
-
 let cloudbaseAppPromise: Promise<any> | null = null;
 
 async function getCloudbaseApp() {
@@ -267,6 +261,7 @@ export default function Home() {
   const [cameraStatus, setCameraStatus] = useState<'off' | 'loading' | 'on' | 'error'>('off');
   const [cameraHint, setCameraHint] = useState('');
   const [cameraPreviewVisible, setCameraPreviewVisible] = useState(true);
+  const [cameraMirrored, setCameraMirrored] = useState(true);
   const [cameraFrame, setCameraFrame] = useState({ x: 83.5, y: 70.5, width: 13.6 });
   const [phoneLandscape, setPhoneLandscape] = useState(false);
   const [isStatsView, setIsStatsView] = useState(false);
@@ -285,12 +280,15 @@ export default function Home() {
   const [connectedCount, setConnectedCount] = useState(0);
   const [connectionProblem, setConnectionProblem] = useState(false);
   const [sendState, setSendState] = useState<'idle' | 'sending' | 'sent' | 'failed'>('idle');
+  const [desktopSignal, setDesktopSignal] = useState<{ id: number; text: string } | null>(null);
   const [calibrating, setCalibrating] = useState(false);
   const [panelOpen, setPanelOpen] = useState(true);
   const [panelPosition, setPanelPosition] = useState({ x: 2.2, y: 61 });
   const [selectedLightId, setSelectedLightId] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const timerRef = useRef<number | null>(null);
+  const desktopSignalTimerRef = useRef<number | null>(null);
+  const cameraMirroredRef = useRef(true);
 
   useEffect(() => {
     messageRef.current = message;
@@ -304,6 +302,10 @@ export default function Home() {
   useEffect(() => {
     connectedCountRef.current = connectedCount;
   }, [connectedCount]);
+
+  useEffect(() => {
+    cameraMirroredRef.current = cameraMirrored;
+  }, [cameraMirrored]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -482,6 +484,16 @@ export default function Home() {
 
   function wait(ms: number) {
     return new Promise((resolve) => window.setTimeout(resolve, ms));
+  }
+
+  function showDesktopSignal(text: string) {
+    if (desktopSignalTimerRef.current) window.clearTimeout(desktopSignalTimerRef.current);
+    const id = Date.now();
+    setDesktopSignal({ id, text: text.toUpperCase() });
+    desktopSignalTimerRef.current = window.setTimeout(() => {
+      setDesktopSignal((current) => current?.id === id ? null : current);
+      desktopSignalTimerRef.current = null;
+    }, 8400);
   }
 
   async function playSignalSequence(signalText = 'RUN') {
@@ -700,7 +712,8 @@ export default function Home() {
     context.clearRect(0, 0, width, height);
     if (!point) return;
 
-    const x = (point.x / 100) * width;
+    const previewX = cameraMirroredRef.current ? point.x : 100 - point.x;
+    const x = (previewX / 100) * width;
     const y = (point.y / 100) * height;
     context.fillStyle = 'rgba(255, 247, 220, 0.98)';
     context.strokeStyle = 'rgba(105, 221, 255, 0.82)';
@@ -1106,9 +1119,10 @@ export default function Home() {
     try {
       const code = nextRoomCode || generateRoomCode();
       setRoomCode(code);
+      const baseUrl = new URL(import.meta.env.BASE_URL, window.location.origin);
       const isLocalPreview = ['localhost', '127.0.0.1', '0.0.0.0'].includes(window.location.hostname);
-      const origin = isLocalPreview ? localShareOrigin : window.location.origin;
-      const url = `${origin}/?view=receiver&room=${code}`;
+      if (isLocalPreview && import.meta.env.BASE_URL === '/') baseUrl.host = new URL(localShareOrigin).host;
+      const url = `${baseUrl.href}?view=receiver&room=${code}`;
       const nextQrImage = await QRCode.toDataURL(url, { margin: 1, width: 280, color: { dark: '#080604', light: '#fbf4e3' } });
       setQrImage(nextQrImage);
       await ensureRoom(code);
@@ -1130,16 +1144,18 @@ export default function Home() {
     sendingRef.current = true;
     setSendState('sending');
     try {
-      const code = roomCodeRef.current || generateRoomCode();
-      if (!roomCodeRef.current) await openConnection(code);
+      const code = roomCodeRef.current;
       const outgoing = {
         id: Date.now(),
         text: text.toUpperCase(),
         sentAt: Date.now(),
       };
       void playSignalSequence(text);
-      await publishRoomMessage(code, outgoing);
-      void trackUsage('send', { room: code, text: outgoing.text });
+      showDesktopSignal(text);
+      if (code) {
+        await publishRoomMessage(code, outgoing);
+        void trackUsage('send', { room: code, text: outgoing.text });
+      }
       setSendState('sent');
       window.setTimeout(() => setSendState('idle'), 900);
     } catch {
@@ -1275,11 +1291,6 @@ export default function Home() {
       <section ref={wallRef} className="wall" aria-label="Strange letter wall interactive prototype">
         <div className="photoLayer" />
         <div className="dimLayer" />
-        <svg className="wireLayer" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
-          {wirePaths.map((path) => (
-            <path key={path} d={path} />
-          ))}
-        </svg>
         <div className="bulbLayer" aria-hidden={calibrating ? 'false' : 'true'}>
           {bulbs.map((bulb, index) => {
             const lit = active === bulb.letter || hold === bulb.letter || panic || Boolean(bulb.letter && sequenceLit.includes(bulb.letter));
@@ -1304,6 +1315,18 @@ export default function Home() {
             );
           })}
         </div>
+        {desktopSignal ? (
+          <>
+            <div className="desktopSignalShade" aria-hidden="true" />
+            <div key={desktopSignal.id} className="desktopSignal" aria-live="polite">
+              {desktopSignal.text.split('').map((char, index) => (
+                <span key={`${desktopSignal.id}-${index}`} style={{ ['--i' as string]: index }}>
+                  {char === ' ' ? '\u00A0' : char}
+                </span>
+              ))}
+            </div>
+          </>
+        ) : null}
         <div className="hitLayer">
           {bulbs.filter((bulb) => bulb.letter).map((bulb) => (
             <button
@@ -1441,9 +1464,17 @@ export default function Home() {
         onPointerDown={dragCamera}
         aria-label="Camera preview"
       >
-        <video ref={videoRef} muted playsInline autoPlay />
+        <video ref={videoRef} className={cameraMirrored ? 'mirrored' : ''} muted playsInline autoPlay />
         <canvas ref={canvasRef} aria-hidden="true" />
         {cameraHint ? <p className="cameraHint">{cameraHint}</p> : null}
+        <button
+          type="button"
+          className="cameraMirrorToggle"
+          onClick={() => setCameraMirrored((current) => !current)}
+          aria-label={cameraMirrored ? 'Switch camera preview to original direction' : 'Mirror camera preview'}
+        >
+          {cameraMirrored ? 'Mirror' : 'Original'}
+        </button>
         <button type="button" onClick={() => setCameraPreviewVisible(false)} aria-label="Hide camera preview">
           Hide
         </button>

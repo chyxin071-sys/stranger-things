@@ -73,7 +73,6 @@ button {
 
 .photoLayer,
 .dimLayer,
-.wireLayer,
 .bulbLayer,
 .hitLayer {
   position: absolute;
@@ -98,23 +97,62 @@ button {
   mix-blend-mode: multiply;
 }
 
-.wireLayer {
-  z-index: 3;
-  pointer-events: none;
-  opacity: 0.68;
-  filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.75));
-}
-
-.wireLayer path {
-  fill: none;
-  stroke: rgba(16, 13, 11, 0.9);
-  stroke-width: 0.18;
-  stroke-linecap: round;
-}
-
 .bulbLayer {
   z-index: 4;
   pointer-events: none;
+}
+
+.desktopSignal {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: clamp(2px, 0.8vw, 13px);
+  width: min(94%, 1320px);
+  color: rgba(255, 239, 211, 0.9);
+  font-family: 'Pinzelan', 'Brush Script MT', 'Segoe Print', cursive;
+  font-size: clamp(72px, min(18vw, 24vh), 310px);
+  font-weight: 400;
+  line-height: 0.88;
+  text-align: center;
+  text-shadow:
+    0 0 2px rgba(255, 250, 236, 0.88),
+    0 0 16px rgba(255, 185, 111, 0.32),
+    0 0 38px rgba(0, 0, 0, 0.66);
+  transform: translate(-50%, -50%) rotate(-2deg);
+  pointer-events: none;
+  mix-blend-mode: screen;
+  opacity: 0;
+  animation: desktopSignalFlicker 8.4s ease-in-out both;
+}
+
+.desktopSignalShade {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse at 50% 50%, rgba(0, 0, 0, 0.18) 0 30%, rgba(0, 0, 0, 0.42) 74%, rgba(0, 0, 0, 0.56) 100%),
+    rgba(0, 0, 0, 0.22);
+  opacity: 0;
+  animation: desktopSignalShade 8.4s ease-in-out both;
+}
+
+.desktopSignal span {
+  display: inline-block;
+  animation: desktopSignalLetter 8.4s ease-in-out both;
+  animation-delay: calc(var(--i) * 88ms);
+}
+
+.desktopSignal span:nth-child(2n) {
+  transform: translateY(0.05em) rotate(3deg);
+}
+
+.desktopSignal span:nth-child(3n) {
+  transform: translateY(-0.04em) rotate(-4deg);
 }
 
 .bulb {
@@ -1014,8 +1052,11 @@ button {
   aspect-ratio: 4 / 3;
   object-fit: cover;
   border-radius: 10px;
-  transform: scaleX(-1);
   opacity: 0.74;
+}
+
+.cameraPanel video.mirrored {
+  transform: scaleX(-1);
 }
 
 .cameraPanel canvas {
@@ -1041,6 +1082,11 @@ button {
   font-size: 10px;
   opacity: 0;
   transition: opacity 140ms ease;
+}
+
+.cameraPanel .cameraMirrorToggle {
+  left: 6px;
+  right: auto;
 }
 
 .cameraHint {
@@ -1253,6 +1299,76 @@ button {
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
+}
+
+@keyframes desktopSignalFlicker {
+  0%,
+  11% {
+    opacity: 0;
+    filter: blur(4px) brightness(0.64);
+  }
+  17%,
+  39%,
+  61% {
+    opacity: 0.68;
+    filter: blur(0.4px) brightness(0.98);
+  }
+  28%,
+  50%,
+  72% {
+    opacity: 0.24;
+    filter: blur(2px) brightness(0.66);
+  }
+  83% {
+    opacity: 0.42;
+    filter: blur(1px) brightness(0.78);
+  }
+  100% {
+    opacity: 0;
+    filter: blur(4px) brightness(0.44);
+  }
+}
+
+@keyframes desktopSignalShade {
+  0%,
+  11% {
+    opacity: 0;
+  }
+  17%,
+  39%,
+  61% {
+    opacity: 1;
+  }
+  28%,
+  50%,
+  72% {
+    opacity: 0.52;
+  }
+  83% {
+    opacity: 0.7;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes desktopSignalLetter {
+  0%,
+  14% {
+    opacity: 0;
+    transform: scale(0.92) rotate(-5deg);
+  }
+  18% {
+    opacity: 1;
+    transform: scale(1.04) rotate(2deg);
+  }
+  72% {
+    opacity: 0.82;
+  }
+  100% {
+    opacity: 0;
+    transform: scale(0.98) rotate(-1deg);
+  }
 }
 
 @keyframes letterPulse {
@@ -1496,15 +1612,18 @@ button {
 
 @media (orientation: portrait) and (max-width: 760px) {
   .wall {
-    width: min(138vw, 162.1svh);
-    transform: translateX(-8vw);
+    width: min(185vw, 162.1svh);
+    /* The oversize portrait wall is left-aligned by mobile WebViews; shift its
+       crop so the alphabet group, not the room's left doorway, stays centered. */
+    transform: translateX(-42vw);
   }
 
   .phoneLandscape .wall {
     position: absolute;
-    left: 61%;
-    top: calc((100svh - 174px) / 2);
-    width: min(180vw, calc(100svh - 132px));
+    left: 50%;
+    top: 50%;
+    width: 100svh;
+    max-height: none;
     transform: translate(-50%, -50%) rotate(90deg);
   }
 
@@ -1525,6 +1644,31 @@ button {
 
   .phoneLandscape .actions {
     max-width: min(430px, calc(100svh - 32px));
+  }
+
+  .phoneLandscape .connectPanel {
+    width: min(360px, calc(100svh - 76px));
+    max-height: calc(100vw - 28px);
+    transform: translate(-50%, -50%) rotate(90deg);
+  }
+
+  .phoneLandscape .connectPanel img {
+    width: min(48vw, 220px);
+  }
+
+  .cameraPanel {
+    position: fixed;
+    left: auto !important;
+    right: max(12px, env(safe-area-inset-right));
+    top: max(12px, env(safe-area-inset-top));
+    width: min(38vw, 200px) !important;
+    max-width: none;
+  }
+
+  .phoneLandscape .cameraPanel {
+    right: max(12px, env(safe-area-inset-right));
+    top: max(12px, env(safe-area-inset-top));
+    width: min(30vw, 190px) !important;
   }
 
   .receiverStage {
