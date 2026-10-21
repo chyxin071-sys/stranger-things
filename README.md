@@ -8,8 +8,9 @@
 
 在线体验：
 
-- <https://stranger.pinnuozhujia.cn/>
-- 备用地址：<https://cloud1-8grodf5s3006f004-1421470557.tcloudbaseapp.com/>
+- <https://chyxin071-sys.github.io/stranger-things/>
+
+网页由 GitHub Pages 发布；远程房间仍使用腾讯云 CloudBase。若更换网页域名，需要先将新域名加入 CloudBase Web 安全域名列表，房间连接才能正常使用。
 
 ## 怎么玩
 
